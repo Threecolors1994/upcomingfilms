@@ -78,6 +78,7 @@ def parse_letterboxd_list(path: Path):
                 "year": int(row["Year"]) if row.get("Year") else None,
                 "position": int(row["Position"]) if row.get("Position") else None,
                 "user_description": (row.get("Description") or "").strip() or None,
+                "letterboxd_url": (row.get("URL") or "").strip() or None,
             }
         )
 
@@ -97,6 +98,52 @@ def tmdb_search(session, title, year, api_key):
     r.raise_for_status()
     results = r.json().get("results", [])
     return results[0] if results else None
+
+
+def tmdb_get_movie(session, movie_id, api_key):
+    """Récupère une fiche film TMDB directement par son ID."""
+    r = session.get(
+        f"{TMDB_BASE}/movie/{movie_id}",
+        params={"language": "fr-FR", "api_key": api_key},
+        timeout=15,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def letterboxd_tmdb_id(session, lb_url):
+    """Extrait l'ID TMDB depuis la page Letterboxd du film.
+    Letterboxd embarque dans chaque page film un lien vers TMDB
+    (matching curé par leurs équipes), bien plus fiable que la
+    recherche par titre + année.
+    """
+    if not lb_url:
+        return None
+    try:
+        r = session.get(lb_url, timeout=15, allow_redirects=True)
+        if r.status_code != 200:
+            return None
+        match = re.search(r"themoviedb\.org/movie/(\d+)", r.text)
+        if match:
+            return int(match.group(1))
+    except Exception:
+        return None
+    return None
+
+
+def resolve_movie(session, film, api_key):
+    """Renvoie (movie_obj, source) où source ∈ {'letterboxd', 'search', None}.
+    Essaie d'abord via l'URL Letterboxd (fiable), retombe sur la recherche
+    par titre si nécessaire.
+    """
+    tmdb_id = letterboxd_tmdb_id(session, film.get("letterboxd_url"))
+    if tmdb_id:
+        try:
+            return tmdb_get_movie(session, tmdb_id, api_key), "letterboxd"
+        except Exception:
+            pass
+    movie = tmdb_search(session, film["name"], film["year"], api_key)
+    return (movie, "search") if movie else (None, None)
 
 
 def tmdb_release_dates(session, movie_id, api_key):
@@ -188,7 +235,7 @@ def enrich_films(films, api_key, verbose=True):
                 flush=True,
             )
         try:
-            movie = tmdb_search(session, film["name"], film["year"], api_key)
+            movie, match_source = resolve_movie(session, film, api_key)
             if not movie:
                 enriched.append(
                     {
@@ -213,7 +260,9 @@ def enrich_films(films, api_key, verbose=True):
                     "position": film["position"],
                     "user_description": film["user_description"],
                     "input_name": film["name"],
+                    "letterboxd_url": film.get("letterboxd_url"),
                     "tmdb_id": movie["id"],
+                    "match_source": match_source,
                     "title": movie["title"],
                     "original_title": movie["original_title"],
                     "year": (movie.get("release_date") or "")[:4] or film["year"],
@@ -232,7 +281,8 @@ def enrich_films(films, api_key, verbose=True):
                 date_str = date[:10] if date else "—"
                 country_str = f" ({country})" if country and country != "FR" else ""
                 dir_str = f" · {', '.join(directors)}" if directors else ""
-                print(f"  → {date_str}{country_str}{dir_str}", file=sys.stderr)
+                src_marker = " ⟲" if match_source == "search" else ""
+                print(f"  → {date_str}{country_str}{dir_str}{src_marker}", file=sys.stderr)
 
         except requests.HTTPError as e:
             enriched.append(
