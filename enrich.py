@@ -15,7 +15,6 @@ Dépendances:
 """
 
 import argparse
-import base64
 import csv
 import json
 import os
@@ -28,7 +27,6 @@ import requests
 
 TMDB_BASE = "https://api.themoviedb.org/3"
 TMDB_IMG = "https://image.tmdb.org/t/p"
-POSTER_SIZE = "w185"  # embarqué en base64 dans le JSON
 
 
 def parse_letterboxd_list(path: Path):
@@ -109,19 +107,6 @@ def tmdb_release_dates(session, movie_id, api_key):
     return r.json()
 
 
-def fetch_poster_b64(session, poster_path):
-    """Télécharge l'affiche et la renvoie en base64. None si échec ou absente."""
-    if not poster_path:
-        return None
-    try:
-        url = f"{TMDB_IMG}/{POSTER_SIZE}{poster_path}"
-        r = session.get(url, timeout=20)
-        r.raise_for_status()
-        return base64.b64encode(r.content).decode("ascii")
-    except Exception:
-        return None
-
-
 def pick_french_release(release_data):
     """Priorité : FR théâtre > FR limitée > FR première > BE > CH > CA > monde."""
     if not release_data or not release_data.get("results"):
@@ -183,7 +168,6 @@ def enrich_films(films, api_key, verbose=True):
 
             releases = tmdb_release_dates(session, movie["id"], api_key)
             date, rtype, country = pick_french_release(releases)
-            poster_b64 = fetch_poster_b64(session, movie.get("poster_path"))
 
             enriched.append(
                 {
@@ -195,7 +179,7 @@ def enrich_films(films, api_key, verbose=True):
                     "original_title": movie["original_title"],
                     "year": (movie.get("release_date") or "")[:4] or film["year"],
                     "poster_path": movie.get("poster_path"),
-                    "poster_b64": poster_b64,
+                    "backdrop_path": movie.get("backdrop_path"),
                     "overview": movie.get("overview"),
                     "vote_average": movie.get("vote_average"),
                     "release_date": date[:10] if date else None,
